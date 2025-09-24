@@ -81,7 +81,10 @@ export const BooksList: React.FC<BooksListProps> = ({ onBookSelect }) => {
             {/* 操作按钮：阅读和删除 */}
             <div className="flex items-center space-x-2 ml-4">
               <button
-                onClick={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleBookSelect(book);
+                }}
                 className="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors"
                 title="Read book"
               >

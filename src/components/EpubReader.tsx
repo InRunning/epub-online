@@ -38,6 +38,8 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
   const [showToc, setShowToc] = useState(false); // 是否显示目录
   const [showSettings, setShowSettings] = useState(false); // 是否显示设置面板
   const [progress, setProgress] = useState(0); // 阅读进度（0-1）
+  const [loadingError, setLoadingError] = useState<string | null>(null); // 加载错误信息
+  const [loadingTimeout, setLoadingTimeout] = useState<NodeJS.Timeout | null>(null); // 加载超时定时器
 
   // 从全局状态获取设置和更新方法
   const { settings, updateBookProgress, updateSettings } = useBookStore();
@@ -45,17 +47,71 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
   // 加载书籍 ----
   // 初始化epubjs实例，创建渲染器并应用设置
   const loadBook = useCallback(async () => {
-    if (!viewerRef.current || !book.file) return;
+    // 清除之前的超时定时器
+    if (loadingTimeout) {
+      clearTimeout(loadingTimeout);
+      setLoadingTimeout(null);
+    }
+
+    // 重置错误状态
+    setLoadingError(null);
+
+    // 添加详细的调试信息
+    console.log('=== BOOK LOADING DEBUG INFO ===');
+    console.log('Book object:', book);
+    console.log('Book metadata:', book.metadata);
+    console.log('Book file:', book.file);
+    console.log('Book file type:', book.file?.type);
+    console.log('Book file size:', book.file?.size);
+    console.log('Viewer ref:', viewerRef.current);
+    console.log('=== END DEBUG INFO ===');
+
+    if (!viewerRef.current) {
+      console.error('Viewer ref is not available');
+      setLoadingError('无法加载书籍：阅读器容器未准备好');
+      return;
+    }
+
+    if (!book.file) {
+      console.error('Book file is missing');
+      setLoadingError('无法加载书籍：书籍文件不存在');
+      return;
+    }
 
     try {
+      console.log('Starting to load book:', book.metadata.title);
       setIsLoading(true);
 
+      // 设置加载超时处理（30秒）
+      const timeoutId = setTimeout(() => {
+        console.error('Book loading timeout');
+        setLoadingError('书籍加载超时，请重试');
+        setIsLoading(false);
+      }, 30000);
+      setLoadingTimeout(timeoutId);
+
       // 从文件创建书籍实例
+      console.log('Converting file to ArrayBuffer...');
       const arrayBuffer = await book.file.arrayBuffer();
+      console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
+      
+      if (arrayBuffer.byteLength === 0) {
+        throw new Error('文件内容为空');
+      }
+      
+      console.log('Creating epubjs instance...');
       const epubBook = ePub(arrayBuffer);
       bookRef.current = epubBook;
 
+      // 等待书籍准备就绪
+      console.log('Waiting for book to be ready...');
+      await epubBook.ready;
+      console.log('Book is ready');
+      console.log('Book spine:', epubBook.spine);
+      console.log('Book navigation:', epubBook.navigation);
+
       // 创建渲染器实例
+      console.log('Creating rendition...');
       const rendition = epubBook.renderTo(viewerRef.current, {
         width: '100%',
         height: '100%',
@@ -63,128 +119,210 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
         manager: 'default',
       });
       renditionRef.current = rendition;
+      console.log('Rendition created');
+
+      // 等待渲染器准备就绪
+      console.log('Waiting for rendition to be ready...');
+      await rendition.displayed;
+      console.log('Rendition is ready');
 
       // 应用主题和设置
+      console.log('Displaying book at location:', book.progress.currentLocation || 'start');
       await rendition.display(book.progress.currentLocation || undefined);
+      console.log('Book displayed, applying settings...');
       applySettings(rendition);
 
       // 设置事件监听器
+      console.log('Setting up event listeners...');
       setupEventListeners(rendition);
 
+      console.log('Book loading completed successfully');
+      
+      // 清除超时定时器
+      if (loadingTimeout) {
+        clearTimeout(loadingTimeout);
+        setLoadingTimeout(null);
+      }
+      
       setIsLoading(false);
 
     } catch (error) {
       console.error('Error loading book:', error);
+      console.error('Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        bookTitle: book.metadata.title,
+        bookId: book.id,
+        fileName: book.file?.name,
+        fileSize: book.file?.size,
+        fileType: book.file?.type
+      });
+      
+      // 清除超时定时器
+      if (loadingTimeout) {
+        clearTimeout(loadingTimeout);
+        setLoadingTimeout(null);
+      }
+      
+      setLoadingError(error instanceof Error ? error.message : '加载书籍时发生未知错误');
       setIsLoading(false);
     }
-  }, [book, settings]);
+  }, [book, settings, loadingTimeout]);
 
   // 应用阅读设置 ----
   // 根据用户设置应用主题、字体、行高等样式
   const applySettings = useCallback((rendition: Rendition) => {
-    // 定义主题配置
-    const themes = {
-      light: {
-        body: {
-          'color': '#333',
-          'background': '#fff',
+    try {
+      console.log('Applying reader settings:', settings);
+      
+      // 定义主题配置
+      const themes = {
+        light: {
+          body: {
+            'color': '#333',
+            'background': '#fff',
+          }
+        },
+        dark: {
+          body: {
+            'color': '#e5e5e5',
+            'background': '#1a1a1a',
+          }
+        },
+        sepia: {
+          body: {
+            'color': '#5c4b37',
+            'background': '#f7f3e9',
+          }
         }
-      },
-      dark: {
-        body: {
-          'color': '#e5e5e5',
-          'background': '#1a1a1a',
+      };
+
+      // 注册并选择主题
+      console.log('Registering themes...');
+      rendition.themes.register('light', themes.light);
+      rendition.themes.register('dark', themes.dark);
+      rendition.themes.register('sepia', themes.sepia);
+      rendition.themes.select(settings.theme);
+      console.log('Theme selected:', settings.theme);
+
+      // 应用字体设置
+      console.log('Applying font settings...');
+      rendition.themes.fontSize(`${settings.fontSize}px`);
+      rendition.themes.font(settings.fontFamily);
+
+      // 应用行高和其他样式
+      const customCSS = `
+        body {
+          line-height: ${settings.lineHeight} !important;
+          max-width: ${settings.pageWidth}px !important;
+          margin: 0 auto !important;
+          padding: 20px !important;
         }
-      },
-      sepia: {
-        body: {
-          'color': '#5c4b37',
-          'background': '#f7f3e9',
+        p {
+          margin-bottom: 1em !important;
+          text-align: justify !important;
         }
-      }
-    };
+      `;
 
-    // 注册并选择主题
-    rendition.themes.register('light', themes.light);
-    rendition.themes.register('dark', themes.dark);
-    rendition.themes.register('sepia', themes.sepia);
-    rendition.themes.select(settings.theme);
+      console.log('Applying custom CSS...');
+      rendition.themes.override('body', {
+        'line-height': settings.lineHeight.toString(),
+      });
 
-    // 应用字体设置
-    rendition.themes.fontSize(`${settings.fontSize}px`);
-    rendition.themes.font(settings.fontFamily);
+      // 应用自定义CSS样式
+      const contents = rendition.getContents();
+      console.log('Found contents:', contents.length);
+      contents.forEach((content: any, index: number) => {
+        console.log(`Applying styles to content ${index}`);
+        content.addStylesheet('data:text/css,' + encodeURIComponent(customCSS));
+      });
 
-    // 应用行高和其他样式
-    const customCSS = `
-      body {
-        line-height: ${settings.lineHeight} !important;
-        max-width: ${settings.pageWidth}px !important;
-        margin: 0 auto !important;
-        padding: 20px !important;
-      }
-      p {
-        margin-bottom: 1em !important;
-        text-align: justify !important;
-      }
-    `;
-
-    rendition.themes.override('body', {
-      'line-height': settings.lineHeight.toString(),
-    });
-
-    // 应用自定义CSS样式
-    rendition.getContents().forEach((content: any) => {
-      content.addStylesheet('data:text/css,' + encodeURIComponent(customCSS));
-    });
-
+      console.log('Settings applied successfully');
+    } catch (error) {
+      console.error('Error applying settings:', error);
+      console.error('Settings error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        settings: settings
+      });
+    }
   }, [settings]);
 
   // 设置事件监听器 ----
   // 配置位置变化、键盘导航和点击导航的事件处理
   const setupEventListeners = useCallback((rendition: Rendition) => {
-    // 位置变化事件
-    rendition.on('locationChanged', (location: any) => {
-      const locationString = location.start.cfi;
-      setCurrentLocation(locationString);
+    try {
+      console.log('Setting up event listeners...');
+      
+      // 位置变化事件
+      console.log('Setting up locationChanged listener...');
+      rendition.on('locationChanged', (location: any) => {
+        console.log('Location changed:', location);
+        const locationString = location.start.cfi;
+        setCurrentLocation(locationString);
 
-      // 计算阅读进度
-      const book = bookRef.current;
-      if (book) {
-        const progress = book.locations.percentageFromCfi(locationString);
-        setProgress(progress);
+        // 计算阅读进度
+        const epubBook = bookRef.current;
+        if (epubBook) {
+          // 确保locations已加载
+          if (!epubBook.locations.total()) {
+            console.log('Locations not loaded yet, skipping progress calculation');
+            return;
+          }
+          
+          const progress = epubBook.locations.percentageFromCfi(locationString);
+          setProgress(progress);
+          console.log('Progress updated:', progress);
 
-        // 更新全局状态中的进度信息
-        updateBookProgress(book.id, {
-          currentLocation: locationString,
-          progress: progress * 100,
-          chapter: location.start.index || 0,
+          // 更新全局状态中的进度信息
+          updateBookProgress(book.id, {
+            currentLocation: locationString,
+            progress: progress * 100,
+            chapter: location.start.index || 0,
+          });
+        }
+      });
+
+      // 键盘导航事件
+      console.log('Setting up keyup listener...');
+      rendition.on('keyup', (event: KeyboardEvent) => {
+        console.log('Key pressed:', event.code);
+        if (event.code === 'ArrowLeft') {
+          console.log('Navigating to previous page');
+          rendition.prev(); // 左箭头翻到上一页
+        } else if (event.code === 'ArrowRight') {
+          console.log('Navigating to next page');
+          rendition.next(); // 右箭头翻到下一页
+        }
+      });
+
+      // 点击导航事件
+      const viewer = viewerRef.current;
+      if (viewer) {
+        console.log('Setting up click navigation...');
+        viewer.addEventListener('click', (event) => {
+          const rect = viewer.getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const centerX = rect.width / 2;
+
+          console.log('Viewer clicked at position:', x, 'center:', centerX);
+
+          // 点击左侧区域翻到上一页，点击右侧区域翻到下一页
+          if (x < centerX * 0.3) {
+            console.log('Navigating to previous page (click)');
+            rendition.prev();
+          } else if (x > centerX * 1.7) {
+            console.log('Navigating to next page (click)');
+            rendition.next();
+          }
         });
       }
-    });
 
-    // 键盘导航事件
-    rendition.on('keyup', (event: KeyboardEvent) => {
-      if (event.code === 'ArrowLeft') {
-        rendition.prev(); // 左箭头翻到上一页
-      } else if (event.code === 'ArrowRight') {
-        rendition.next(); // 右箭头翻到下一页
-      }
-    });
-
-    // 点击导航事件
-    const viewer = viewerRef.current;
-    if (viewer) {
-      viewer.addEventListener('click', (event) => {
-        const rect = viewer.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const centerX = rect.width / 2;
-
-        // 点击左侧区域翻到上一页，点击右侧区域翻到下一页
-        if (x < centerX * 0.3) {
-          rendition.prev();
-        } else if (x > centerX * 1.7) {
-          rendition.next();
-        }
+      console.log('Event listeners setup completed');
+    } catch (error) {
+      console.error('Error setting up event listeners:', error);
+      console.error('Event listeners error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined
       });
     }
   }, [updateBookProgress]);
@@ -230,11 +368,25 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
 
     // 组件卸载时清理资源
     return () => {
+      // 清除超时定时器
+      if (loadingTimeout) {
+        clearTimeout(loadingTimeout);
+      }
+      
+      // 清理书籍资源
       if (bookRef.current) {
+        console.log('Cleaning up book resources...');
         bookRef.current.destroy();
+        bookRef.current = null;
+      }
+      
+      // 清理渲染器
+      if (renditionRef.current) {
+        console.log('Cleaning up rendition...');
+        renditionRef.current = null;
       }
     };
-  }, [loadBook]);
+  }, [loadBook, loadingTimeout]);
 
   // 设置变化时重新应用 ----
   useEffect(() => {
@@ -243,13 +395,38 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
     }
   }, [settings, applySettings, isLoading]);
 
-  // 加载状态显示 ----
-  if (isLoading) {
+  // 注意：不要在加载时提前return，否则渲染容器不会挂载，
+  // 导致viewerRef.current为null并报“阅读器容器未准备好”。
+
+  // 如果有加载错误且不在加载中，显示错误页面
+  if (loadingError) {
     return (
       <div className="h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-center">
-          <div className="animate-spin w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full mx-auto mb-4" />
-          <p className="text-gray-600">Loading book...</p>
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">加载失败</h2>
+          <p className="text-gray-600 mb-6">{loadingError}</p>
+          <div className="space-y-3">
+            <button
+              onClick={() => {
+                setLoadingError(null);
+                loadBook();
+              }}
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+            >
+              重试加载
+            </button>
+            <button
+              onClick={onClose}
+              className="w-full px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 transition-colors"
+            >
+              返回图书馆
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -347,6 +524,33 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
                             settings.theme === 'sepia' ? '#f7f3e9' : '#fff'
             }}
           />
+
+          {/* 加载与错误遮罩层（保持容器已挂载） */}
+          {(isLoading || loadingError) && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-50/80">
+              <div className="text-center">
+                {isLoading && (
+                  <div className="animate-spin w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full mx-auto mb-4" />
+                )}
+                <p className="text-gray-600 mb-2">Loading book...</p>
+                <p className="text-sm text-gray-500">正在加载《{book.metadata.title}》</p>
+                {loadingError && (
+                  <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md">
+                    <p className="text-sm text-red-600">{loadingError}</p>
+                    <button
+                      onClick={() => {
+                        setIsLoading(false);
+                        onClose?.();
+                      }}
+                      className="mt-2 px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 transition-colors"
+                    >
+                      返回图书馆
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 目录侧边栏 ---- */}

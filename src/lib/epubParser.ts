@@ -12,30 +12,56 @@ export class EpubParser {
   // @param file - 要解析的EPUB文件
   // @returns 解析后的EpubBook对象
   static async parseEpubFile(file: File): Promise<EpubBook> {
+    console.log('Starting EPUB file parsing:', file.name);
+    
+    // 设置解析超时处理
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('EPUB文件解析超时'));
+      }, 30000); // 30秒超时
+    });
+
     try {
       // 生成书籍唯一ID
       const bookId = this.generateBookId(file);
+      console.log('Generated book ID:', bookId);
+      
       // 将文件转换为ArrayBuffer以供epubjs使用
-      const arrayBuffer = await file.arrayBuffer();
+      console.log('Converting file to ArrayBuffer...');
+      const arrayBufferPromise = file.arrayBuffer();
+      const arrayBuffer = await Promise.race([arrayBufferPromise, timeoutPromise]);
+      console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
+      
       // 创建epubjs书籍实例
+      console.log('Creating epubjs instance...');
       const book = ePub(arrayBuffer);
 
-      // 等待书籍准备就绪
-      await book.ready;
+      // 等待书籍准备就绪，设置超时
+      console.log('Waiting for book to be ready...');
+      const readyPromise = book.ready;
+      await Promise.race([readyPromise, timeoutPromise]);
+      console.log('Book is ready');
 
       // 提取书籍元数据
+      console.log('Extracting metadata...');
       const metadata = await this.extractMetadata(book);
+      console.log('Metadata extracted:', metadata);
 
       // 提取章节和导航信息
+      console.log('Extracting chapters...');
       const chapters = await this.extractChapters(book);
+      console.log('Chapters extracted:', chapters.length);
 
       // 获取封面图像
+      console.log('Extracting cover...');
       const coverUrl = await this.extractCover(book);
       if (coverUrl) {
         metadata.cover = coverUrl;
+        console.log('Cover extracted');
       }
 
       // 构建并返回完整的书籍对象
+      console.log('EPUB parsing completed successfully');
       return {
         id: bookId,
         file,
@@ -49,7 +75,18 @@ export class EpubParser {
       };
     } catch (error) {
       console.error('Error parsing EPUB file:', error);
-      throw new Error('Failed to parse EPUB file. Please make sure it\'s a valid EPUB file.');
+      console.error('Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        fileName: file.name,
+        fileSize: file.size
+      });
+      
+      if (error instanceof Error && error.message === 'EPUB文件解析超时') {
+        throw new Error('解析EPUB文件超时，请检查文件是否损坏或尝试使用其他文件');
+      }
+      
+      throw new Error('解析EPUB文件失败，请确保文件格式正确');
     }
   }
 
@@ -69,20 +106,51 @@ export class EpubParser {
   // @param book - epubjs书籍实例
   // @returns 标准化的BookMetadata对象
   private static async extractMetadata(book: any): Promise<BookMetadata> {
-    const metadata = book.package.metadata;
+    try {
+      console.log('Extracting metadata from book...');
+      
+      if (!book.package || !book.package.metadata) {
+        console.warn('Book package or metadata not found');
+        return this.getDefaultMetadata();
+      }
+      
+      const metadata = book.package.metadata;
+      console.log('Raw metadata:', metadata);
 
-    // 处理并返回标准化的元数据，确保每个字段都有默认值
+      // 处理并返回标准化的元数据，确保每个字段都有默认值
+      const result = {
+        title: metadata.title || 'Unknown Title',
+        // 处理作者信息，可能是字符串、数组或对象
+        author: Array.isArray(metadata.creator)
+          ? metadata.creator.map((c: any) => typeof c === 'string' ? c : c._).join(', ')
+          : (typeof metadata.creator === 'string' ? metadata.creator : metadata.creator?._ || 'Unknown Author'),
+        description: metadata.description || '',
+        identifier: metadata.identifier || '',
+        language: metadata.language || 'en',
+        publisher: metadata.publisher || '',
+        pubdate: metadata.pubdate || '',
+      };
+      
+      console.log('Processed metadata:', result);
+      return result;
+    } catch (error) {
+      console.error('Error extracting metadata:', error);
+      return this.getDefaultMetadata();
+    }
+  }
+
+  // 获取默认元数据 ----
+  // 当元数据提取失败时返回默认值
+  // @returns 默认的BookMetadata对象
+  private static getDefaultMetadata(): BookMetadata {
     return {
-      title: metadata.title || 'Unknown Title',
-      // 处理作者信息，可能是字符串、数组或对象
-      author: Array.isArray(metadata.creator)
-        ? metadata.creator.map((c: any) => typeof c === 'string' ? c : c._).join(', ')
-        : (typeof metadata.creator === 'string' ? metadata.creator : metadata.creator?._ || 'Unknown Author'),
-      description: metadata.description || '',
-      identifier: metadata.identifier || '',
-      language: metadata.language || 'en',
-      publisher: metadata.publisher || '',
-      pubdate: metadata.pubdate || '',
+      title: 'Unknown Title',
+      author: 'Unknown Author',
+      description: '',
+      identifier: '',
+      language: 'en',
+      publisher: '',
+      pubdate: '',
     };
   }
 
@@ -91,34 +159,80 @@ export class EpubParser {
   // @param book - epubjs书籍实例
   // @returns 章节信息数组
   private static async extractChapters(book: any): Promise<ChapterInfo[]> {
-    const navigation = book.navigation;
-    const chapters: ChapterInfo[] = [];
+    try {
+      console.log('Extracting chapters...');
+      const chapters: ChapterInfo[] = [];
 
-    // 优先使用目录(TOC)结构
-    if (navigation && navigation.toc) {
-      navigation.toc.forEach((item: any, index: number) => {
-        chapters.push({
-          href: item.href,
-          id: item.id || `chapter-${index}`,
-          label: item.label || `Chapter ${index + 1}`,
-          order: index,
+      // 检查导航对象
+      if (!book.navigation) {
+        console.warn('Book navigation not found');
+        return this.getDefaultChapters();
+      }
+
+      const navigation = book.navigation;
+      console.log('Navigation object found');
+
+      // 优先使用目录(TOC)结构
+      if (navigation && navigation.toc && Array.isArray(navigation.toc)) {
+        console.log('Found TOC with', navigation.toc.length, 'items');
+        navigation.toc.forEach((item: any, index: number) => {
+          if (item && item.href) {
+            chapters.push({
+              href: item.href,
+              id: item.id || `chapter-${index}`,
+              label: item.label || `Chapter ${index + 1}`,
+              order: index,
+            });
+          } else {
+            console.warn('Invalid TOC item at index', index, ':', item);
+          }
         });
-      });
-    }
+      } else {
+        console.warn('No valid TOC found');
+      }
 
-    // 如果没有找到目录，使用spine项目作为备选方案
-    if (chapters.length === 0 && book.spine) {
-      book.spine.spineItems.forEach((item: any, index: number) => {
-        chapters.push({
-          href: item.href,
-          id: item.id || `spine-${index}`,
-          label: `Section ${index + 1}`,
-          order: index,
+      // 如果没有找到目录，使用spine项目作为备选方案
+      if (chapters.length === 0 && book.spine && book.spine.spineItems) {
+        console.log('Using spine items as fallback, found', book.spine.spineItems.length, 'items');
+        book.spine.spineItems.forEach((item: any, index: number) => {
+          if (item && item.href) {
+            chapters.push({
+              href: item.href,
+              id: item.id || `spine-${index}`,
+              label: `Section ${index + 1}`,
+              order: index,
+            });
+          } else {
+            console.warn('Invalid spine item at index', index, ':', item);
+          }
         });
-      });
-    }
+      }
 
-    return chapters;
+      console.log('Extracted', chapters.length, 'chapters');
+      
+      // 如果没有任何章节，返回默认章节
+      if (chapters.length === 0) {
+        console.warn('No chapters found, returning default chapters');
+        return this.getDefaultChapters();
+      }
+
+      return chapters;
+    } catch (error) {
+      console.error('Error extracting chapters:', error);
+      return this.getDefaultChapters();
+    }
+  }
+
+  // 获取默认章节 ----
+  // 当章节提取失败时返回默认章节
+  // @returns 默认的ChapterInfo数组
+  private static getDefaultChapters(): ChapterInfo[] {
+    return [{
+      href: '',
+      id: 'default-chapter',
+      label: '开始阅读',
+      order: 0,
+    }];
   }
 
   // 提取封面图像 ----
@@ -127,21 +241,44 @@ export class EpubParser {
   // @returns 封面图像的data URL或null（如果没有封面）
   private static async extractCover(book: any): Promise<string | null> {
     try {
+      console.log('Extracting cover image...');
+      
+      // 检查book对象是否有coverUrl方法
+      if (typeof book.coverUrl !== 'function') {
+        console.warn('Book does not have coverUrl method');
+        return null;
+      }
+
       // 获取封面URL
       const coverUrl = await book.coverUrl();
       if (coverUrl) {
+        console.log('Cover URL found:', coverUrl);
+        
         // 将blob URL转换为data URL以便持久化存储
         const response = await fetch(coverUrl);
+        if (!response.ok) {
+          console.warn('Failed to fetch cover image:', response.status, response.statusText);
+          return null;
+        }
+        
         const blob = await response.blob();
-        return new Promise((resolve) => {
+        console.log('Cover blob created, size:', blob.size);
+        
+        return new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => {
+            console.error('Error reading cover blob');
+            reject(new Error('Failed to read cover image'));
+          };
           reader.readAsDataURL(blob);
         });
+      } else {
+        console.log('No cover URL found');
+        return null;
       }
-      return null;
     } catch (error) {
-      console.warn('Could not extract cover image:', error);
+      console.error('Error extracting cover image:', error);
       return null;
     }
   }
