@@ -73,4 +73,6 @@ export interface EpubBook {
   chapters: ChapterInfo[];
   // 阅读进度信息
   progress: BookProgress;
+  // 缓存的ArrayBuffer（可选，用于避免重复转换）
+  _arrayBuffer?: ArrayBuffer;
 }

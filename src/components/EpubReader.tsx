@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useBookStore } from '@/store/useBookStore';
 import { EpubBook } from '@/types/epub';
+import { BookCacheManager } from '@/lib/bookCache';
 
 // 组件属性接口 ----
 interface EpubReaderProps {
@@ -78,22 +79,40 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       return;
     }
 
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       console.log('Starting to load book:', book.metadata.title);
       setIsLoading(true);
 
-      // 设置加载超时处理（30秒）
-      const timeoutId = setTimeout(() => {
+      // 设置加载超时处理（减少到15秒）
+      timeoutId = setTimeout(() => {
         console.error('Book loading timeout');
         setLoadingError('书籍加载超时，请重试');
         setIsLoading(false);
-      }, 30000);
+      }, 15000);
       setLoadingTimeout(timeoutId);
 
-      // 从文件创建书籍实例
-      console.log('Converting file to ArrayBuffer...');
-      const arrayBuffer = await book.file.arrayBuffer();
-      console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
+      // 使用缓存的ArrayBuffer或转换文件
+      console.log('Getting ArrayBuffer...');
+      let arrayBuffer: ArrayBuffer;
+      
+      // 首先检查全局缓存
+      const globalCachedBuffer = BookCacheManager.getCachedBook(book.id);
+      if (globalCachedBuffer) {
+        console.log('Using globally cached ArrayBuffer');
+        arrayBuffer = globalCachedBuffer;
+      } else if (book._arrayBuffer) {
+        console.log('Using book instance cached ArrayBuffer');
+        arrayBuffer = book._arrayBuffer;
+        // 同时添加到全局缓存
+        BookCacheManager.cacheBook(book.id, arrayBuffer);
+      } else {
+        console.log('Converting file to ArrayBuffer...');
+        arrayBuffer = await book.file.arrayBuffer();
+        console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
+        // 缓存ArrayBuffer
+        BookCacheManager.cacheBook(book.id, arrayBuffer);
+      }
       
       if (arrayBuffer.byteLength === 0) {
         throw new Error('文件内容为空');
@@ -107,8 +126,6 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       console.log('Waiting for book to be ready...');
       await epubBook.ready;
       console.log('Book is ready');
-      console.log('Book spine:', epubBook.spine);
-      console.log('Book navigation:', epubBook.navigation);
 
       // 创建渲染器实例
       console.log('Creating rendition...');
@@ -117,17 +134,18 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
         height: '100%',
         flow: 'paginated', // 分页模式
         manager: 'default',
+        // 优化性能的设置
+        snap: true,
+        allowScriptedContent: true,
       });
       renditionRef.current = rendition;
       console.log('Rendition created');
 
-      // 等待渲染器准备就绪
-      console.log('Waiting for rendition to be ready...');
-      await rendition.displayed;
-      console.log('Rendition is ready');
-
-      // 应用主题和设置
+      // 注意：epubjs v0.3 没有 Promise 类型的 displayed 属性。
+      // 直接使用 display() 返回的 Promise，避免一直等待导致加载覆盖层不消失。
       console.log('Displaying book at location:', book.progress.currentLocation || 'start');
+      
+      // 先显示内容，再异步生成locations，避免阻塞加载
       await rendition.display(book.progress.currentLocation || undefined);
       console.log('Book displayed, applying settings...');
       applySettings(rendition);
@@ -136,13 +154,19 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       console.log('Setting up event listeners...');
       setupEventListeners(rendition);
 
+      // 异步生成locations，不阻塞主要加载流程
+      console.log('Starting locations generation in background...');
+      epubBook.locations.generate(1000).then(() => {
+        console.log('Locations generated:', epubBook.locations.length());
+      }).catch(e => {
+        console.warn('Generate locations failed:', e);
+      });
+
       console.log('Book loading completed successfully');
       
       // 清除超时定时器
-      if (loadingTimeout) {
-        clearTimeout(loadingTimeout);
-        setLoadingTimeout(null);
-      }
+      if (timeoutId) clearTimeout(timeoutId);
+      setLoadingTimeout(null);
       
       setIsLoading(false);
 
@@ -159,15 +183,13 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       });
       
       // 清除超时定时器
-      if (loadingTimeout) {
-        clearTimeout(loadingTimeout);
-        setLoadingTimeout(null);
-      }
+      if (timeoutId) clearTimeout(timeoutId);
+      setLoadingTimeout(null);
       
       setLoadingError(error instanceof Error ? error.message : '加载书籍时发生未知错误');
       setIsLoading(false);
     }
-  }, [book, settings, loadingTimeout]);
+  }, [book.id, book.file, book._arrayBuffer]);
 
   // 应用阅读设置 ----
   // 根据用户设置应用主题、字体、行高等样式
@@ -225,17 +247,23 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       `;
 
       console.log('Applying custom CSS...');
-      rendition.themes.override('body', {
-        'line-height': settings.lineHeight.toString(),
-      });
+      rendition.themes.override('body', `line-height: ${settings.lineHeight} !important;`);
 
       // 应用自定义CSS样式
       const contents = rendition.getContents();
-      console.log('Found contents:', contents.length);
-      contents.forEach((content: any, index: number) => {
-        console.log(`Applying styles to content ${index}`);
-        content.addStylesheet('data:text/css,' + encodeURIComponent(customCSS));
-      });
+      console.log('Found contents:', contents);
+      
+      // 处理contents可能是数组或单个对象的情况
+      if (Array.isArray(contents)) {
+        console.log('Contents is an array, length:', contents.length);
+        contents.forEach((content: any, index: number) => {
+          console.log(`Applying styles to content ${index}`);
+          content.addStylesheet('data:text/css,' + encodeURIComponent(customCSS));
+        });
+      } else if (contents) {
+        console.log('Contents is a single object');
+        contents.addStylesheet('data:text/css,' + encodeURIComponent(customCSS));
+      }
 
       console.log('Settings applied successfully');
     } catch (error) {
@@ -254,9 +282,9 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       console.log('Setting up event listeners...');
       
       // 位置变化事件
-      console.log('Setting up locationChanged listener...');
-      rendition.on('locationChanged', (location: any) => {
-        console.log('Location changed:', location);
+      console.log('Setting up relocated listener...');
+      rendition.on('relocated', (location: any) => {
+        console.log('Relocated:', location);
         const locationString = location.start.cfi;
         setCurrentLocation(locationString);
 
@@ -264,7 +292,7 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
         const epubBook = bookRef.current;
         if (epubBook) {
           // 确保locations已加载
-          if (!epubBook.locations.total()) {
+          if (!epubBook.locations || epubBook.locations.length() === 0) {
             console.log('Locations not loaded yet, skipping progress calculation');
             return;
           }
@@ -386,7 +414,7 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
         renditionRef.current = null;
       }
     };
-  }, [loadBook, loadingTimeout]);
+  }, [loadBook]);
 
   // 设置变化时重新应用 ----
   useEffect(() => {

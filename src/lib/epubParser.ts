@@ -3,6 +3,7 @@
 
 import ePub from 'epubjs';
 import { BookMetadata, ChapterInfo, EpubBook } from '@/types/epub';
+import { BookCacheManager } from './bookCache';
 
 // EPUB文件解析器类 ----
 // 提供EPUB文件的解析、验证和内容提取功能
@@ -14,24 +15,43 @@ export class EpubParser {
   static async parseEpubFile(file: File): Promise<EpubBook> {
     console.log('Starting EPUB file parsing:', file.name);
     
-    // 设置解析超时处理
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(new Error('EPUB文件解析超时'));
-      }, 30000); // 30秒超时
-    });
+    // 生成书籍唯一ID
+    const bookId = this.generateBookId(file);
+    console.log('Generated book ID:', bookId);
+    
+    // 检查缓存中是否已有该书籍
+    const cachedArrayBuffer = BookCacheManager.getCachedBook(bookId);
+    let arrayBuffer: ArrayBuffer;
+    
+    if (cachedArrayBuffer) {
+      console.log('Using cached ArrayBuffer for book:', bookId);
+      arrayBuffer = cachedArrayBuffer;
+    } else {
+      // 设置解析超时处理（减少超时时间到15秒）
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('EPUB文件解析超时'));
+        }, 15000); // 15秒超时
+      });
 
+      try {
+        // 将文件转换为ArrayBuffer以供epubjs使用
+        console.log('Converting file to ArrayBuffer...');
+        const arrayBufferPromise = file.arrayBuffer();
+        arrayBuffer = await Promise.race([arrayBufferPromise, timeoutPromise]);
+        console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
+        
+        // 缓存ArrayBuffer以供后续使用
+        BookCacheManager.cacheBook(bookId, arrayBuffer);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'EPUB文件解析超时') {
+          throw new Error('转换EPUB文件超时，请检查文件是否损坏或尝试使用其他文件');
+        }
+        throw error;
+      }
+    }
+    
     try {
-      // 生成书籍唯一ID
-      const bookId = this.generateBookId(file);
-      console.log('Generated book ID:', bookId);
-      
-      // 将文件转换为ArrayBuffer以供epubjs使用
-      console.log('Converting file to ArrayBuffer...');
-      const arrayBufferPromise = file.arrayBuffer();
-      const arrayBuffer = await Promise.race([arrayBufferPromise, timeoutPromise]);
-      console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
-      
       // 创建epubjs书籍实例
       console.log('Creating epubjs instance...');
       const book = ePub(arrayBuffer);
@@ -39,28 +59,38 @@ export class EpubParser {
       // 等待书籍准备就绪，设置超时
       console.log('Waiting for book to be ready...');
       const readyPromise = book.ready;
-      await Promise.race([readyPromise, timeoutPromise]);
+      await Promise.race([readyPromise, new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('书籍准备就绪超时')), 10000);
+      })]);
       console.log('Book is ready');
 
-      // 提取书籍元数据
-      console.log('Extracting metadata...');
-      const metadata = await this.extractMetadata(book);
-      console.log('Metadata extracted:', metadata);
+      // 并行执行元数据、章节和封面的提取
+      console.log('Extracting book data in parallel...');
+      const [metadata, chapters, coverUrl] = await Promise.all([
+        this.extractMetadata(book).catch(err => {
+          console.warn('Metadata extraction failed:', err);
+          return this.getDefaultMetadata();
+        }),
+        this.extractChapters(book).catch(err => {
+          console.warn('Chapters extraction failed:', err);
+          return this.getDefaultChapters();
+        }),
+        this.extractCover(book).catch(err => {
+          console.warn('Cover extraction failed:', err);
+          return null;
+        })
+      ]);
 
-      // 提取章节和导航信息
-      console.log('Extracting chapters...');
-      const chapters = await this.extractChapters(book);
-      console.log('Chapters extracted:', chapters.length);
-
-      // 获取封面图像
-      console.log('Extracting cover...');
-      const coverUrl = await this.extractCover(book);
+      // 如果有封面URL，添加到元数据
       if (coverUrl) {
         metadata.cover = coverUrl;
         console.log('Cover extracted');
       }
 
-      // 构建并返回完整的书籍对象
+      console.log('Metadata extracted:', metadata);
+      console.log('Chapters extracted:', chapters.length);
+
+      // 构建并返回完整的书籍对象，同时保存ArrayBuffer以避免重复转换
       console.log('EPUB parsing completed successfully');
       return {
         id: bookId,
@@ -72,6 +102,8 @@ export class EpubParser {
           progress: 0,
           chapter: 0,
         },
+        // 保存ArrayBuffer以避免在阅读器中重复转换
+        _arrayBuffer: arrayBuffer,
       };
     } catch (error) {
       console.error('Error parsing EPUB file:', error);

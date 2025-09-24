@@ -3,10 +3,11 @@
 
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { BookOpen, User, Calendar, Trash2, Play } from 'lucide-react';
 import { useBookStore } from '@/store/useBookStore';
 import { EpubBook } from '@/types/epub';
+import { BookCacheManager } from '@/lib/bookCache';
 
 // 组件属性接口 ----
 interface BooksListProps {
@@ -18,6 +19,32 @@ interface BooksListProps {
 export const BooksList: React.FC<BooksListProps> = ({ onBookSelect }) => {
   // 从全局状态获取书籍数据和操作方法
   const { books, currentBook, setCurrentBook, removeBook } = useBookStore();
+  const [preloadingBooks, setPreloadingBooks] = useState<Set<string>>(new Set());
+
+  // 鼠标悬停时预加载书籍
+  const handleMouseEnter = async (book: EpubBook) => {
+    // 如果书籍已经在缓存中或正在预加载，则跳过
+    if (BookCacheManager.isBookCached(book.id) || preloadingBooks.has(book.id)) {
+      return;
+    }
+
+    // 标记为正在预加载
+    setPreloadingBooks(prev => new Set(prev).add(book.id));
+    
+    try {
+      // 在后台预加载书籍
+      await BookCacheManager.preloadBook(book.file, book.id);
+    } catch (error) {
+      console.warn(`Failed to preload book ${book.id}:`, error);
+    } finally {
+      // 移除预加载标记
+      setPreloadingBooks(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(book.id);
+        return newSet;
+      });
+    }
+  };
 
   // 书籍选择处理 ----
   // 设置当前选中的书籍并触发回调函数
@@ -58,8 +85,10 @@ export const BooksList: React.FC<BooksListProps> = ({ onBookSelect }) => {
             bg-white rounded-lg shadow-sm border border-gray-200 p-6 cursor-pointer
             transition-all duration-200 hover:shadow-md hover:border-gray-300
             ${currentBook?.id === book.id ? 'ring-2 ring-blue-500 border-blue-300' : ''}
+            ${preloadingBooks.has(book.id) ? 'opacity-90' : ''}
           `}
           onClick={() => handleBookSelect(book)}
+          onMouseEnter={() => handleMouseEnter(book)}
         >
           {/* 书籍封面和操作按钮 ---- */}
           <div className="flex items-start justify-between mb-4">
