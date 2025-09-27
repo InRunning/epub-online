@@ -41,6 +41,8 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
   const [progress, setProgress] = useState(0); // 阅读进度（0-1）
   const [loadingError, setLoadingError] = useState<string | null>(null); // 加载错误信息
   const [loadingTimeout, setLoadingTimeout] = useState<NodeJS.Timeout | null>(null); // 加载超时定时器
+  const [loadingProgress, setLoadingProgress] = useState<string>(''); // 加载进度信息
+  const [errorDetails, setErrorDetails] = useState<string>(''); // 错误详细信息
 
   // 从全局状态获取设置和更新方法
   const { settings, updateBookProgress, updateSettings } = useBookStore();
@@ -56,6 +58,7 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
 
     // 重置错误状态
     setLoadingError(null);
+    setErrorDetails('');
 
     // 添加详细的调试信息
     console.log('=== BOOK LOADING DEBUG INFO ===');
@@ -83,17 +86,21 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
     try {
       console.log('Starting to load book:', book.metadata.title);
       setIsLoading(true);
+      setLoadingProgress('准备加载书籍...');
 
-      // 设置加载超时处理（减少到15秒）
+      // 设置加载超时处理（增加到30秒，给大型书籍更多时间）
       timeoutId = setTimeout(() => {
         console.error('Book loading timeout');
-        setLoadingError('书籍加载超时，请重试');
+        setLoadingError('书籍加载超时');
+        setErrorDetails('加载时间超过30秒，可能是文件过大或网络连接不稳定。请尝试较小的EPUB文件或检查网络连接后重试。');
         setIsLoading(false);
-      }, 15000);
+        setLoadingProgress('');
+      }, 30000);
       setLoadingTimeout(timeoutId);
 
       // 使用缓存的ArrayBuffer或转换文件
       console.log('Getting ArrayBuffer...');
+      setLoadingProgress('正在读取书籍文件...');
       let arrayBuffer: ArrayBuffer;
       
       // 首先检查全局缓存
@@ -101,13 +108,16 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       if (globalCachedBuffer) {
         console.log('Using globally cached ArrayBuffer');
         arrayBuffer = globalCachedBuffer;
+        setLoadingProgress('使用缓存的书籍文件...');
       } else if (book._arrayBuffer) {
         console.log('Using book instance cached ArrayBuffer');
         arrayBuffer = book._arrayBuffer;
         // 同时添加到全局缓存
         BookCacheManager.cacheBook(book.id, arrayBuffer);
+        setLoadingProgress('使用缓存的书籍文件...');
       } else {
         console.log('Converting file to ArrayBuffer...');
+        setLoadingProgress('正在转换书籍文件格式...');
         arrayBuffer = await book.file.arrayBuffer();
         console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
         // 缓存ArrayBuffer
@@ -115,20 +125,30 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       }
       
       if (arrayBuffer.byteLength === 0) {
-        throw new Error('文件内容为空');
+        throw new Error('文件内容为空，请检查EPUB文件是否损坏');
+      }
+      
+      // 检查文件大小，如果过大则给出提示
+      const fileSizeInMB = arrayBuffer.byteLength / (1024 * 1024);
+      if (fileSizeInMB > 50) {
+        console.warn('Large file detected:', fileSizeInMB.toFixed(2), 'MB');
+        setLoadingProgress(`检测到大文件(${fileSizeInMB.toFixed(1)}MB)，加载可能需要更长时间...`);
       }
       
       console.log('Creating epubjs instance...');
+      setLoadingProgress('正在初始化阅读器...');
       const epubBook = ePub(arrayBuffer);
       bookRef.current = epubBook;
 
       // 等待书籍准备就绪
       console.log('Waiting for book to be ready...');
+      setLoadingProgress('正在解析书籍内容...');
       await epubBook.ready;
       console.log('Book is ready');
 
       // 创建渲染器实例
       console.log('Creating rendition...');
+      setLoadingProgress('正在创建阅读界面...');
       const rendition = epubBook.renderTo(viewerRef.current, {
         width: '100%',
         height: '100%',
@@ -146,6 +166,7 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       // 注意：epubjs v0.3 没有 Promise 类型的 displayed 属性。
       // 直接使用 display() 返回的 Promise，避免一直等待导致加载覆盖层不消失。
       console.log('Displaying book at location:', book.progress.currentLocation || 'start');
+      setLoadingProgress('正在显示书籍内容...');
       
       // 先显示内容，再异步生成locations，避免阻塞加载
       await rendition.display(book.progress.currentLocation || undefined);
@@ -156,21 +177,29 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       console.log('Setting up event listeners...');
       setupEventListeners(rendition);
 
-      // 异步生成locations，不阻塞主要加载流程
+      // 异步生成locations，使用更小的间隔值以提高性能，不阻塞主要加载流程
       console.log('Starting locations generation in background...');
-      epubBook.locations.generate(1000).then(() => {
+      setLoadingProgress('正在生成阅读位置信息...');
+      epubBook.locations.generate(500).then(() => {
         console.log('Locations generated:', epubBook.locations.length());
+        setLoadingProgress('');
       }).catch(e => {
         console.warn('Generate locations failed:', e);
+        setLoadingProgress('');
       });
 
       console.log('Book loading completed successfully');
+      setLoadingProgress('加载完成！');
       
       // 清除超时定时器
       if (timeoutId) clearTimeout(timeoutId);
       setLoadingTimeout(null);
       
-      setIsLoading(false);
+      // 延迟一点再隐藏加载状态，让用户看到"加载完成"的提示
+      setTimeout(() => {
+        setIsLoading(false);
+        setLoadingProgress('');
+      }, 500);
 
     } catch (error) {
       console.error('Error loading book:', error);
@@ -188,8 +217,31 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       if (timeoutId) clearTimeout(timeoutId);
       setLoadingTimeout(null);
       
-      setLoadingError(error instanceof Error ? error.message : '加载书籍时发生未知错误');
+      // 根据错误类型提供更友好的错误信息
+      let errorMessage = '加载书籍时发生未知错误';
+      let detailsMessage = '';
+      
+      if (error instanceof Error) {
+        errorMessage = error.message;
+        
+        // 根据错误消息提供更详细的解决方案
+        if (error.message.includes('timeout') || error.message.includes('超时')) {
+          detailsMessage = '加载时间过长，可能是文件过大或网络连接不稳定。请尝试较小的EPUB文件或检查网络连接后重试。';
+        } else if (error.message.includes('文件内容为空') || error.message.includes('empty')) {
+          detailsMessage = 'EPUB文件可能已损坏或不完整。请尝试重新下载或使用其他EPUB文件。';
+        } else if (error.message.includes('解析') || error.message.includes('parse')) {
+          detailsMessage = '无法解析EPUB文件格式。请确保文件是有效的EPUB格式，不是其他类型的文件。';
+        } else if (error.message.includes('网络') || error.message.includes('network')) {
+          detailsMessage = '网络连接问题导致加载失败。请检查网络连接后重试。';
+        } else {
+          detailsMessage = '请确保EPUB文件格式正确，然后重试。如果问题持续存在，请尝试使用其他EPUB文件。';
+        }
+      }
+      
+      setLoadingError(errorMessage);
+      setErrorDetails(detailsMessage);
       setIsLoading(false);
+      setLoadingProgress('');
     }
   }, [book.id, book.file, book._arrayBuffer, settings.readingMode, settings.columnMode]);
 
@@ -439,11 +491,15 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
             </svg>
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">加载失败</h2>
-          <p className="text-gray-600 mb-6">{loadingError}</p>
+          <p className="text-gray-600 mb-2">{loadingError}</p>
+          {errorDetails && (
+            <p className="text-sm text-gray-500 mb-4">{errorDetails}</p>
+          )}
           <div className="space-y-3">
             <button
               onClick={() => {
                 setLoadingError(null);
+                setErrorDetails('');
                 loadBook();
               }}
               className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -564,18 +620,36 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
                 )}
                 <p className="text-gray-600 mb-2">Loading book...</p>
                 <p className="text-sm text-gray-500">正在加载《{book.metadata.title}》</p>
+                {loadingProgress && (
+                  <p className="text-xs text-blue-600 mt-1">{loadingProgress}</p>
+                )}
                 {loadingError && (
                   <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md">
-                    <p className="text-sm text-red-600">{loadingError}</p>
-                    <button
-                      onClick={() => {
-                        setIsLoading(false);
-                        onClose?.();
-                      }}
-                      className="mt-2 px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 transition-colors"
-                    >
-                      返回图书馆
-                    </button>
+                    <p className="text-sm text-red-600 font-medium">{loadingError}</p>
+                    {errorDetails && (
+                      <p className="text-xs text-red-500 mt-1">{errorDetails}</p>
+                    )}
+                    <div className="mt-3 flex space-x-2">
+                      <button
+                        onClick={() => {
+                          setLoadingError(null);
+                          setErrorDetails('');
+                          loadBook();
+                        }}
+                        className="flex-1 px-3 py-1.5 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 transition-colors"
+                      >
+                        重试
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsLoading(false);
+                          onClose?.();
+                        }}
+                        className="flex-1 px-3 py-1.5 bg-gray-200 text-gray-800 text-sm rounded-md hover:bg-gray-300 transition-colors"
+                      >
+                        返回图书馆
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
