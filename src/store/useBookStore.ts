@@ -44,6 +44,8 @@ const defaultSettings: ReaderSettings = {
   lineHeight: 1.6,                 // 默认行间距
   pageWidth: 800,                  // 默认页面宽度
   isFullscreen: false,             // 默认非全屏模式
+  columnMode: 'single',            // 默认单栏模式
+  readingMode: 'paginated',        // 默认分页模式
 };
 
 // 创建书店状态管理器 ----

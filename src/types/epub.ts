@@ -58,6 +58,10 @@ export interface ReaderSettings {
   pageWidth: number;
   // 是否全屏模式
   isFullscreen: boolean;
+  // 阅读模式：单栏或双栏
+  columnMode: 'single' | 'double';
+  // 阅读方式：分页或滚动
+  readingMode: 'paginated' | 'scrolled';
 }
 
 // EPUB书籍接口定义 ----

@@ -132,11 +132,13 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       const rendition = epubBook.renderTo(viewerRef.current, {
         width: '100%',
         height: '100%',
-        flow: 'paginated', // 分页模式
+        flow: settings.readingMode, // 使用设置中的阅读模式（分页或滚动）
         manager: 'default',
         // 优化性能的设置
-        snap: true,
+        snap: settings.readingMode === 'paginated', // 只在分页模式下启用snap
         allowScriptedContent: true,
+        // 根据栏数设置
+        spread: settings.columnMode === 'double' ? 'auto' : 'none', // 双栏模式使用auto，单栏模式使用none
       });
       renditionRef.current = rendition;
       console.log('Rendition created');
@@ -189,7 +191,7 @@ export const EpubReader: React.FC<EpubReaderProps> = ({ book, onClose }) => {
       setLoadingError(error instanceof Error ? error.message : '加载书籍时发生未知错误');
       setIsLoading(false);
     }
-  }, [book.id, book.file, book._arrayBuffer]);
+  }, [book.id, book.file, book._arrayBuffer, settings.readingMode, settings.columnMode]);
 
   // 应用阅读设置 ----
   // 根据用户设置应用主题、字体、行高等样式

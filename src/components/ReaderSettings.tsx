@@ -3,7 +3,7 @@
 // 导入React相关依赖
 import React from 'react';
 // 导入图标组件
-import { X, Type, Palette, Eye, Monitor } from 'lucide-react';
+import { X, Type, Palette, Eye, Monitor, Columns, Scroll } from 'lucide-react';
 // 导入状态管理
 import { useBookStore } from '@/store/useBookStore';
 
@@ -41,6 +41,20 @@ export const ReaderSettings: React.FC<ReaderSettingsProps> = ({ isOpen, onClose 
     { value: 'light', label: '明亮', icon: '☀️' },
     { value: 'dark', label: '暗黑', icon: '🌙' },
     { value: 'sepia', label: '护眼', icon: '📖' },
+  ] as const;
+
+  // 栏数模式选项配置 ----
+  // 提供单栏和双栏两种阅读模式
+  const columnModeOptions = [
+    { value: 'single', label: '单栏', icon: '📄' },
+    { value: 'double', label: '双栏', icon: '📖' },
+  ] as const;
+
+  // 阅读模式选项配置 ----
+  // 提供分页和滚动两种阅读方式
+  const readingModeOptions = [
+    { value: 'paginated', label: '分页', icon: '📄' },
+    { value: 'scrolled', label: '滚动', icon: '📜' },
   ] as const;
 
   // 组件渲染 ----
@@ -182,6 +196,60 @@ export const ReaderSettings: React.FC<ReaderSettingsProps> = ({ isOpen, onClose 
             </div>
           </div>
 
+          {/* 栏数模式设置 ---- */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3 flex items-center">
+              <Columns className="w-4 h-4 mr-2" />
+              栏数模式
+            </label>
+            {/* 栏数模式选择网格 ---- */}
+            <div className="grid grid-cols-2 gap-3">
+              {columnModeOptions.map((mode) => (
+                <button
+                  key={mode.value}
+                  onClick={() => updateSettings({ columnMode: mode.value as 'single' | 'double' })}
+                  className={`
+                    p-4 rounded-lg border-2 transition-all duration-200 text-center
+                    ${settings.columnMode === mode.value
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <div className="text-2xl mb-2">{mode.icon}</div>
+                  <div className="text-sm font-medium">{mode.label}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 阅读模式设置 ---- */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3 flex items-center">
+              <Scroll className="w-4 h-4 mr-2" />
+              阅读模式
+            </label>
+            {/* 阅读模式选择网格 ---- */}
+            <div className="grid grid-cols-2 gap-3">
+              {readingModeOptions.map((mode) => (
+                <button
+                  key={mode.value}
+                  onClick={() => updateSettings({ readingMode: mode.value as 'paginated' | 'scrolled' })}
+                  className={`
+                    p-4 rounded-lg border-2 transition-all duration-200 text-center
+                    ${settings.readingMode === mode.value
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <div className="text-2xl mb-2">{mode.icon}</div>
+                  <div className="text-sm font-medium">{mode.label}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* 阅读宽度设置 ---- */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-3">
@@ -220,6 +288,8 @@ export const ReaderSettings: React.FC<ReaderSettingsProps> = ({ isOpen, onClose 
                 theme: 'light',
                 lineHeight: 1.6,
                 pageWidth: 800,
+                columnMode: 'single',
+                readingMode: 'paginated',
               });
             }}
             className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
